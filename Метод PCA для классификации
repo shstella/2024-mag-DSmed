@@ -1,0 +1,220 @@
+from collections import Counter
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
+
+from sklearn.cluster import KMeans, DBSCAN, MiniBatchKMeans, AgglomerativeClustering
+from scipy.cluster.hierarchy import linkage, dendrogram
+from sklearn.mixture import GaussianMixture
+from kneed import KneeLocator
+from sklearn.decomposition import PCA
+from sklearn.metrics import silhouette_score, calinski_harabasz_score, davies_bouldin_score, rand_score
+
+from tqdm import tqdm
+
+from xgboost import XGBClassifier
+
+from sklearn.model_selection import train_test_split
+from sklearn import tree
+from sklearn.tree import export_graphviz
+from sklearn.pipeline import make_pipeline
+from sklearn.metrics import accuracy_score
+
+import shap
+df = pd.read_csv('heart.csv')
+
+df.head()
+print(f"Data set has {len(df.columns)} columns")
+df.describe()
+df.info()
+for column in df.columns:
+    fig, ax = plt.subplots(1,1, figsize=(9, 6))
+    sns.histplot(df[column], bins = 20)
+    fig.text(0.1, 0.95, f"Histogram of {column} variable", fontsize=16, fontweight='bold', fontfamily='serif')
+    plt.xlabel(' ', fontsize=20)
+    plt.ylabel('')
+    plt.yticks(fontsize=13)
+    plt.box(False)
+sns.boxplot(data=df[['age', 'trestbps', 'chol', 'thalach', 'oldpeak']])
+plt.title("Variables with continuous distributions")
+df = df.drop(columns=["cp"])
+print(f"{100 * sum(df['oldpeak'] == 0) / len(df['oldpeak'])} % of the data has oldpeak equal 0")
+sns.histplot(df["oldpeak"], bins=30)
+plt.title("Histogram of the oldpeak variable")
+sns.histplot(df[df["oldpeak"] > 0]["oldpeak"], bins=30)
+plt.title("Histogram of the oldpeak variable when oldpeak is not 0")
+sns.histplot(np.log(df["oldpeak"] + 1), bins=30)
+plt.title("Histogram of the log-scaling of the oldpeak")
+df.head()
+spear_corr_matrix = df.corr(method="pearson")
+
+fig, ax = plt.subplots(1,1, figsize=(9, 6))
+ax = sns.heatmap(spear_corr_matrix,
+            xticklabels=spear_corr_matrix.columns,
+            yticklabels=spear_corr_matrix.columns,
+            cmap='RdBu_r',
+            annot=True,
+            linewidth=0.5
+            )
+ax.collections[0].set_clim(-1,1)
+plt.title("Pearson corelation matrix")
+spear_corr_matrix = df.corr(method="spearman")
+
+fig, ax = plt.subplots(1,1, figsize=(9, 6))
+ax = sns.heatmap(spear_corr_matrix,
+            xticklabels=spear_corr_matrix.columns,
+            yticklabels=spear_corr_matrix.columns,
+            cmap='RdBu_r',
+            annot=True,
+            linewidth=0.5
+            )
+ax.collections[0].set_clim(-1,1)
+plt.title("Spearman corelation matrix")
+pca = PCA()
+pca.fit(df)
+pca.explained_variance_
+pca.explained_variance_ > 1
+fig, ax = plt.subplots(1,1, figsize=(6, 9))
+features = range(pca.n_components_)
+plt.bar(features, pca.explained_variance_)
+plt.title("PCA Variance plot")
+
+NORMAL_COLUMNS = ["age", "trestbps", "chol", "thalach"]
+NON_NORMAL_COLUMNS = ["oldpeak"]
+DISCRETE_COLUMNS = ["sex", "fbs", "exang", "restecg", "slope"]
+class Scaler1:
+    standard_scaler: StandardScaler
+    min_max_scaler: MinMaxScaler
+
+    def __init__(self):
+        self.norm_scaler = StandardScaler()
+        self.min_max_scaler = MinMaxScaler()
+
+    def fit(self, X: pd.DataFrame):
+        self.norm_scaler.fit(X[NORMAL_COLUMNS])
+
+        columns_to_min_max = DISCRETE_COLUMNS + NON_NORMAL_COLUMNS
+        df2_p1 = X[DISCRETE_COLUMNS]
+        df2_p2 = pd.DataFrame(np.log(X[NON_NORMAL_COLUMNS] + 1), columns=NON_NORMAL_COLUMNS)
+        to_min_max = pd.concat([df2_p1, df2_p2], axis="columns")
+
+        self.min_max_scaler.fit(to_min_max)
+
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        part1 = self.norm_scaler.transform(X[NORMAL_COLUMNS])
+        df1 = pd.DataFrame(part1, columns=NORMAL_COLUMNS)
+
+        columns_to_min_max = DISCRETE_COLUMNS + NON_NORMAL_COLUMNS
+        df2_p1 = X[DISCRETE_COLUMNS]
+        df2_p2 = pd.DataFrame(np.log(X[NON_NORMAL_COLUMNS] + 1), columns=NON_NORMAL_COLUMNS)
+        to_min_max = pd.concat([df2_p1, df2_p2], axis="columns")
+
+        part2 = self.min_max_scaler.transform(to_min_max)
+        df2 = pd.DataFrame(part2, columns=columns_to_min_max)
+
+        return pd.concat([df1, df2], axis="columns")
+
+    def fit_transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        self.fit(X)
+        return self.transform(X)
+
+class Scaler2:
+    standard_scaler: StandardScaler
+
+    def __init__(self):
+        self.standard_scaler = StandardScaler()
+
+    def fit(self, X: pd.DataFrame):
+        self.standard_scaler.fit(X)
+
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        transformed_matrix = self.standard_scaler.transform(X)
+        return pd.DataFrame(transformed_matrix, columns=X.columns)
+
+    def fit_transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        self.fit(X)
+        return self.transform(X)
+
+df_scaled = Scaler1().fit_transform(df)
+
+linkage_output = linkage(df_scaled, method="complete")
+dendrogram(linkage_output)
+plt.show()
+df_scaled = Scaler2().fit_transform(df)
+
+linkage_output = linkage(df_scaled, method="complete")
+dendrogram(linkage_output)
+plt.show()
+df_scaled = Scaler2().fit_transform(df)
+
+linkage_output = linkage(df_scaled, method="ward")
+dendrogram(linkage_output)
+plt.show()
+df_scaled = Scaler2().fit_transform(df)
+
+linkage_output = linkage(df_scaled, method="single")
+dendrogram(linkage_output)
+plt.show()
+df_scaled = Scaler2().fit_transform(df)
+df_scaled_pca = PCA(n_components=5).fit_transform(df_scaled)
+
+linkage_output = linkage(df_scaled_pca, method="complete")
+dendrogram(linkage_output)
+plt.show()
+from sklearn.decomposition import PCA
+from sklearn.metrics import accuracy_score
+import seaborn as sns
+import matplotlib.pyplot as plt
+from xgboost import XGBClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+
+# Разделение данных на обучающие и тестовые
+df_train, df_test = train_test_split(df, test_size=0.3, random_state=33, shuffle=True)
+
+# Масштабирование данных перед применением PCA
+scaler = StandardScaler()
+df_train_scaled = scaler.fit_transform(df_train)
+df_test_scaled = scaler.transform(df_test)
+
+# Применяем PCA для снижения размерности до 3 компонентов
+pca = PCA(n_components=3)
+df_train_pca = pca.fit_transform(df_train_scaled)
+df_test_pca = pca.transform(df_test_scaled)
+
+# Обучаем кластеризацию (например, KMeans)
+#train_labels = clustering_pipeline.fit_predict(df_train).astype(int)
+NUMBER_OF_CLASSES=9
+# Обучаем XGBClassifier на данных, преобразованных с помощью PCA
+xgb_model = XGBClassifier(objective='multi:softmax', num_class=NUMBER_OF_CLASSES, n_estimators=300, max_depth=6)
+xgb_model.fit(df_train_pca, train_labels)
+
+# Предсказания на обучающих данных
+train_pred = xgb_model.predict(df_train_pca)
+
+
+
+# Визуализация 3D графика для предсказаний на обучающих данных
+fig = plt.figure(figsize=(9, 12))
+ax = fig.add_subplot(111, projection='3d')
+ax.scatter(df_train_pca[:, 0], df_train_pca[:, 1], df_train_pca[:, 2], c=train_pred, cmap='viridis')
+ax.set_xlabel('PCA Component 1')
+ax.set_ylabel('PCA Component 2')
+ax.set_zlabel('PCA Component 3')
+plt.title("3D visualization of XGBClassifier predictions (Train Data)")
+plt.show()
+
+
+# Визуализация 3D графика для предсказаний на тестовых данных
+fig = plt.figure(figsize=(9, 12))
+ax = fig.add_subplot(111, projection='3d')
+ax.scatter(df_test_pca[:, 0], df_test_pca[:, 1], df_test_pca[:, 2], c=test_pred, cmap='viridis')
+ax.set_xlabel('PCA Component 1')
+ax.set_ylabel('PCA Component 2')
+ax.set_zlabel('PCA Component 3')
+plt.title("3D visualization of XGBClassifier predictions (Test Data)")
+plt.show()
