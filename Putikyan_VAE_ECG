@@ -1,0 +1,121 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+
+# Шаг 1: Загрузка данных
+data_url = 'http://storage.googleapis.com/download.tensorflow.org/data/ecg.csv'
+df = pd.read_csv(data_url, header=None)
+data = df.values
+
+# Шаг 2: Предобработка данных
+scaler = StandardScaler()  # Масштабируем данные в диапазон со средним 0 и стандартным отклонением 1
+data = scaler.fit_transform(data)
+
+# Разделение на тренировочную и тестовую выборки
+train_data, test_data = train_test_split(data, test_size=0.2, random_state=42)
+train_data = torch.tensor(train_data, dtype=torch.float32)
+test_data = torch.tensor(test_data, dtype=torch.float32)
+
+# Шаг 3: Определение модели VAE
+class VAE(nn.Module):
+    def __init__(self, input_dim, latent_dim):
+        super(VAE, self).__init__()
+
+        # Энкодер
+        self.encoder = nn.Sequential(
+            nn.Linear(input_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, latent_dim * 2)  # Выход для mu и log_var
+        )
+
+        # Декодер
+        self.decoder = nn.Sequential(
+            nn.Linear(latent_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, 256),  # Новый слой
+            nn.ReLU(),
+            nn.Linear(256, input_dim)  # Убрана Sigmoid
+        )
+
+    def reparameterize(self, mu, log_var):
+        std = torch.exp(0.5 * log_var)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+
+    def forward(self, x):
+        # Энкодинг
+        x = self.encoder(x)
+        mu, log_var = x[:, :x.size(1)//2], x[:, x.size(1)//2:]
+        z = self.reparameterize(mu, log_var)
+
+        # Декодинг
+        x_reconstructed = self.decoder(z)
+        return x_reconstructed, mu, log_var
+
+# Шаг 4: Обучение модели
+input_dim = data.shape[1]
+latent_dim = 32  # Увеличено с 16 до 32
+model = VAE(input_dim, latent_dim)
+
+criterion = nn.MSELoss()  # MSE для реконструкции
+optimizer = optim.Adam(model.parameters(), lr=0.001)
+
+num_epochs = 100
+train_losses = []
+test_losses = []
+
+for epoch in range(num_epochs):
+    # Обучение
+    model.train()
+    optimizer.zero_grad()
+    x_reconstructed, mu, log_var = model(train_data)
+    reconstruction_loss = criterion(x_reconstructed, train_data)
+    kl_divergence = -0.5 * torch.sum(1 + log_var - mu.pow(2) - log_var.exp())
+    loss = reconstruction_loss + kl_divergence
+    loss.backward()
+    optimizer.step()
+    train_losses.append(loss.item())
+
+    # Тестирование
+    model.eval()
+    with torch.no_grad():
+        x_reconstructed, _, _ = model(test_data)
+        test_loss = criterion(x_reconstructed, test_data)
+        test_losses.append(test_loss.item())
+
+    if epoch % 10 == 0:
+        print(f"Epoch [{epoch}/{num_epochs}], Train Loss: {loss.item():.4f}, Test Loss: {test_loss.item():.4f}")
+
+# Шаг 5: Визуализация потерь
+plt.figure()
+plt.plot(train_losses, label='train')
+plt.plot(test_losses, label='test')
+plt.xlabel('Epoch')
+plt.ylabel('Loss')
+plt.title('Loss over training epochs')
+plt.legend()
+plt.show()
+
+# Шаг 6: Анализ реконструкции
+model.eval()
+with torch.no_grad():
+    x_reconstructed, _, _ = model(test_data)
+
+# Выбор нескольких примеров для визуализации
+examples = 4
+indices = np.random.choice(len(test_data), examples, replace=False)
+plt.figure(figsize=(16, 8))
+for i, idx in enumerate(indices):
+    plt.subplot(2, examples, i + 1)
+    plt.plot(test_data[idx], label='true', color='black')
+    plt.plot(x_reconstructed[idx], label='reconstructed', color='red')
+    loss = criterion(x_reconstructed[idx], test_data[idx]).item()
+    plt.title(f"Normal (loss: {loss:.2f})" if loss < 0.1 else f"Anomaly (loss: {loss:.2f})")
+    plt.legend()
+plt.tight_layout()
+plt.show()
